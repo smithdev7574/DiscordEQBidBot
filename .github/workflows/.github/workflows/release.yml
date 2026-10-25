@@ -1,0 +1,35 @@
+name: Build Release
+
+on:
+  release:
+    types: [published]
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout Source
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+          include-prerelease: true
+
+      - name: Restore Packages
+        run: dotnet restore
+
+      - name: Publish Application
+        run: |
+          dotnet publish -c Release -r win-x64 --self-contained true -o publish
+
+      - name: Create Zip File
+        run: |
+          Compress-Archive -Path publish\* -DestinationPath BidBot-win-x64.zip
+
+      - name: Upload Release Asset
+        uses: softprops/action-gh-release@v2
+        with:
+          files: BidBot-win-x64.zip
