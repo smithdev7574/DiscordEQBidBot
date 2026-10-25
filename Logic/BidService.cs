@@ -260,6 +260,7 @@ namespace BidBot.Logic
 
             if (winner == null)
             {
+                auctionStore.Remove(auction.AuctionID);
                 await communication.SendMessageByChannelName(auction.GuildID, awardChannel, auction.GetFinishMessage());
                 return;
             }
