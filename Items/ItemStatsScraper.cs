@@ -145,8 +145,15 @@ namespace BidBot.Items
             if (string.IsNullOrWhiteSpace(snippet))
                 return null;
 
+            // The new item window puts the item name in a figcaption. It is presentation
+            // metadata rather than an item stat, so remove it before extracting lines.
+            var withoutCaption = Regex.Replace(snippet,
+                "<figcaption\\b[^>]*>.*?</figcaption>",
+                string.Empty,
+                RegexOptions.IgnoreCase | RegexOptions.Singleline);
+
             // Convert anchors to their inner text (drop href)
-            var withLinks = Regex.Replace(snippet,
+            var withLinks = Regex.Replace(withoutCaption,
                 "<a[^>]*>(?<text>.*?)</a>",
                 match =>
                 {
@@ -156,8 +163,13 @@ namespace BidBot.Items
                 },
                 RegexOptions.IgnoreCase | RegexOptions.Singleline);
 
-            // Normalize <br> to newlines
+            // Normalize line and block elements to newlines. The current item markup uses one <p>
+            // element per stat line rather than <br> elements.
             var withNewlines = Regex.Replace(withLinks, "<br\\s*/?>", "\n", RegexOptions.IgnoreCase);
+            withNewlines = Regex.Replace(withNewlines,
+                "</?(?:p|div|figcaption|tr|li|td|th)\\b[^>]*>",
+                "\n",
+                RegexOptions.IgnoreCase);
 
             // Strip remaining HTML tags
             var withoutTags = Regex.Replace(withNewlines, "<.*?>", string.Empty, RegexOptions.Singleline);
@@ -217,32 +229,49 @@ namespace BidBot.Items
 
             var ci = StringComparison.OrdinalIgnoreCase;
 
-            // Find class="eqitem"
+            // Find the legacy class="eqitem" table.
             var classIdx = html.IndexOf("class=\"eqitem\"", ci);
             if (classIdx < 0)
                 classIdx = html.IndexOf("class='eqitem'", ci);
-
             if (classIdx < 0)
-            {
-                // fallback: find <table class=... containing eqitem
                 classIdx = html.IndexOf("eqitem", ci);
-                if (classIdx < 0)
+
+            if (classIdx >= 0)
+            {
+                // find the opening <table before the class occurrence
+                var tableOpen = html.LastIndexOf("<table", classIdx, ci);
+                if (tableOpen < 0)
+                    tableOpen = html.IndexOf("<table", ci);
+                if (tableOpen < 0)
                     return null;
+
+                var tableClose = html.IndexOf("</table>", classIdx, ci);
+                if (tableClose < 0)
+                    return null;
+
+                var end = tableClose + "</table>".Length;
+                return html.Substring(tableOpen, end - tableOpen);
             }
 
-            // find the opening <table before the class occurrence
-            var tableOpen = html.LastIndexOf("<table", classIdx, ci);
-            if (tableOpen < 0)
-                tableOpen = html.IndexOf("<table", ci);
-            if (tableOpen < 0)
-                return null;
+            // The current site renders the item window as a <figure> with a caption
+            // and one <p> element for each line of item text.
+            var figureMatches = Regex.Matches(html,
+                "<figure\\b[^>]*\\baria-label\\s*=\\s*[\"'][^\"']*[\"'][^>]*>",
+                RegexOptions.IgnoreCase | RegexOptions.Singleline);
 
-            var tableClose = html.IndexOf("</table>", classIdx, ci);
-            if (tableClose < 0)
-                return null;
+            foreach (Match figureMatch in figureMatches)
+            {
+                var figureClose = html.IndexOf("</figure>", figureMatch.Index + figureMatch.Length, ci);
+                if (figureClose < 0)
+                    continue;
 
-            var end = tableClose + "</table>".Length;
-            return html.Substring(tableOpen, end - tableOpen);
+                var figureEnd = figureClose + "</figure>".Length;
+                var figure = html.Substring(figureMatch.Index, figureEnd - figureMatch.Index);
+                if (figure.IndexOf("<figcaption", ci) >= 0 && figure.IndexOf("<p", ci) >= 0)
+                    return figure;
+            }
+
+            return null;
         }
 
         private static async Task<string> FetchStringFollowingMetaRefreshAsync(string url, CancellationToken ct)

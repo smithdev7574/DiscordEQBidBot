@@ -34,13 +34,13 @@ namespace BidBot.Messaging
             return returnMessage;
         }
 
-        public async Task<RestUserMessage> SendMessageByChannelName(ulong guildID, string channelName, string message, MessageComponent components = null, Embed embed = null)
+        public async Task<RestUserMessage> SendMessageByChannelName(ulong guildID, string channelName, string message, MessageComponent components = null, Embed embed = null, MessageFlags flags = MessageFlags.None)
         {
             var guild = client.GetGuild(guildID);
             var channel = guild?.TextChannels.FirstOrDefault(c => c.Name.Equals(channelName, StringComparison.OrdinalIgnoreCase));
             if (channel == null)
                 throw new ArgumentException($"Channel with name {channelName} not found in guild {guildID}");
-            var returnMessage = await channel.SendMessageAsync(message, components: components, embed: embed);
+            var returnMessage = await channel.SendMessageAsync(message, components: components, embed: embed, flags: flags);
             return returnMessage;
         }
 
