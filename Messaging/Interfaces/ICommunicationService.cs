@@ -8,7 +8,7 @@ namespace BidBot.Messaging
     {
         Task<RestUserMessage> SendMessage(ulong guildID, ulong channelID, string message);
 
-        Task<RestUserMessage> SendMessageByChannelName(ulong guildID, string channelName, string message, MessageComponent components = null, Embed embed = null);
+        Task<RestUserMessage> SendMessageByChannelName(ulong guildID, string channelName, string message, MessageComponent components = null, Embed embed = null, MessageFlags flags = MessageFlags.None);
 
         Task SendTell(ulong userID, string message);
 

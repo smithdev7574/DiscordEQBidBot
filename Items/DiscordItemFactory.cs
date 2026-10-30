@@ -16,26 +16,49 @@ namespace BidBot.Items
         /// Convert the provided HTML snippet (expected to be a &lt;table class="eqitem"&gt;...&lt;/table&gt;)
         /// into a markdown string suitable for posting in Discord messages.
         /// Accepts the itemName and itemUrl; the output header will be the itemName linking to itemUrl.
-        /// Any anchor tags found inside the snippet will have their URLs removed and only the link text kept.
+        /// Any anchor tags found inside the snippet are converted to Discord hyperlinks.
         /// </summary>
         public string CreateFromHtml(string html, string itemName, string itemUrl)
         {
             if (string.IsNullOrWhiteSpace(html))
                 return string.Empty;
 
-            // Convert anchor tags to plain text: <a ...>text</a> -> text (drop href)
-            var withLinks = Regex.Replace(html,
-                "<a[^>]*>(?<text>.*?)</a>",
+            // The new item window puts the item name in a figcaption. It is supplied
+            // separately by the caller, so exclude it from the body.
+            var withoutCaption = Regex.Replace(html,
+                "<figcaption\\b[^>]*>.*?</figcaption>",
+                string.Empty,
+                RegexOptions.IgnoreCase | RegexOptions.Singleline);
+
+            // Convert anchor tags to Discord links: <a href="...">text</a> -> [text](url)
+            var withLinks = Regex.Replace(withoutCaption,
+                "<a\\b(?<attributes>[^>]*)>(?<text>.*?)</a>",
                 match =>
                 {
                     var text = Regex.Replace(match.Groups["text"].Value, "<.*?>", string.Empty, RegexOptions.Singleline);
                     text = WebUtility.HtmlDecode(text).Trim();
-                    return EscapeMarkdown(text);
+
+                    var hrefMatch = Regex.Match(match.Groups["attributes"].Value,
+                        "\\bhref\\s*=\\s*(?:\"(?<href>[^\"]*)\"|'(?<href>[^']*)'|(?<href>[^\\s>]+))",
+                        RegexOptions.IgnoreCase);
+                    if (!hrefMatch.Success)
+                        return EscapeMarkdown(text);
+
+                    var href = WebUtility.HtmlDecode(hrefMatch.Groups["href"].Value).Trim();
+                    if (!TryResolveHttpUrl(href, itemUrl, out var resolvedUrl))
+                        return EscapeMarkdown(text);
+
+                    return $"[{EscapeMarkdown(text)}]({resolvedUrl})";
                 },
                 RegexOptions.IgnoreCase | RegexOptions.Singleline);
 
-            // Normalize <br> to newlines
+            // Normalize line and block elements to newlines. The current item markup
+            // uses one <p> element per stat line rather than <br> elements.
             var withNewlines = Regex.Replace(withLinks, "<br\\s*/?>", "\n", RegexOptions.IgnoreCase);
+            withNewlines = Regex.Replace(withNewlines,
+                "</?(?:p|div|figcaption|tr|li|td|th)\\b[^>]*>",
+                "\n",
+                RegexOptions.IgnoreCase);
 
             // Strip remaining HTML tags
             var withoutTags = Regex.Replace(withNewlines, "<.*?>", string.Empty, RegexOptions.Singleline);
@@ -95,6 +118,27 @@ namespace BidBot.Items
                 .Replace("~", "\\~")
                 .Replace("`", "\\`")
                 .Replace("|", "\\|");
+        }
+
+        private static bool TryResolveHttpUrl(string href, string itemUrl, out string resolvedUrl)
+        {
+            resolvedUrl = string.Empty;
+            if (string.IsNullOrWhiteSpace(href))
+                return false;
+
+            Uri baseUri;
+            if (!Uri.TryCreate(itemUrl, UriKind.Absolute, out baseUri!))
+                baseUri = new Uri("https://allakhazam.com/", UriKind.Absolute);
+
+            if (!Uri.TryCreate(baseUri, href, out var linkUri))
+                return false;
+
+            if (!string.Equals(linkUri.Scheme, Uri.UriSchemeHttp, StringComparison.OrdinalIgnoreCase) &&
+                !string.Equals(linkUri.Scheme, Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase))
+                return false;
+
+            resolvedUrl = linkUri.AbsoluteUri;
+            return true;
         }
     }
 }

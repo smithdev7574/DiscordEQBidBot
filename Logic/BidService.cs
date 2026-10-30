@@ -170,7 +170,7 @@ namespace BidBot.Logic
             builder.WithButton("Cancel Bid", $"{ButtonHandler.CANCEL_BID}:{auction.AuctionID}", ButtonStyle.Danger);
             builder.WithButton("Cancel Auction", $"{ButtonHandler.CANCEL_AUCTION}:{auction.AuctionID}", ButtonStyle.Secondary);
             var component = builder.Build();
-            var userMessage = await communication.SendMessageByChannelName(guildID, bidChannel, messageMarkdown, component);
+            var userMessage = await communication.SendMessageByChannelName(guildID, bidChannel, messageMarkdown, component, flags: MessageFlags.SuppressEmbeds);
 
             auction.MessageID = userMessage.Id;
             auction.ChannelID = userMessage.Channel.Id;
