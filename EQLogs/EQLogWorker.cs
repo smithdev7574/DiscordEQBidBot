@@ -1,4 +1,4 @@
-﻿using BidBot.DataAccess;
+using BidBot.DataAccess;
 using BidBot.Logic;
 using BidBot.Messaging;
 using BidBot.Sheets;
@@ -68,13 +68,13 @@ namespace BidBot.EQLogs
                 {
                     try
                     {
-                        position = readLogFile(position);
+                        readLogFile(ref position);
                         await processQueue();
 
                     }
                     catch (Exception ex)
                     {
-                        logger.LogError(ex, "BidTimerWorker encountered an error while running tick");
+                        logger.LogError(ex, "EQLogWorker encountered an error while polling the log");
                     }
                 }
 
@@ -123,6 +123,10 @@ namespace BidBot.EQLogs
                             logger.LogError(ex, "Error Updating Sheet.");
                         }
                     }
+                    else
+                    {
+                        logger.LogWarning("Skipping malformed EQ loot line: {LogLine}", result);
+                    }
                 }
             }
 
@@ -132,26 +136,43 @@ namespace BidBot.EQLogs
             }
         }
 
-        private long readLogFile(long position)
+        private void readLogFile(ref long position)
         {
-            using (var file = File.Open(logFileName, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
+            using var file = File.Open(logFileName, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+            var fileLength = file.Length;
+            if (position > fileLength)
             {
-                if (position < file.Length)
-                {
-                    file.Position = position;
-                    using (var reader = new StreamReader(file))
-                    {
-                        string line;
-                        while ((line = reader.ReadLine()) != null)
-                        {
-                            logStore.Enqueue(line);
-                        }
-                        position = file.Position;
-                    }
-                }
+                logger.LogWarning("EQ log {LogFile} shrank from read position {Position} to {Length} bytes. Reading from the beginning.",
+                    logFileName, position, fileLength);
+                position = 0;
             }
 
-            return position;
+            if (position == fileLength)
+                return;
+
+            file.Position = position;
+            using var line = new MemoryStream();
+
+            // Commit the position only after a line ending. A later poll can then
+            // reread an unfinished line, including any partial UTF-8 character.
+            int nextByte;
+            while ((nextByte = file.ReadByte()) != -1)
+            {
+                if (nextByte != '\r' && nextByte != '\n')
+                {
+                    line.WriteByte((byte)nextByte);
+                    continue;
+                }
+
+                if (line.Length > 0)
+                {
+                    var text = Encoding.UTF8.GetString(line.GetBuffer(), 0, (int)line.Length);
+                    logStore.Enqueue(position == 0 ? text.TrimStart('\uFEFF') : text);
+                    line.SetLength(0);
+                }
+
+                position = file.Position;
+            }
         }
 
         private bool tryParseGivenItem(string logLine, out string itemName, out string playerName)
@@ -166,13 +187,13 @@ namespace BidBot.EQLogs
                 return false;
 
             int tsEnd = logLine.IndexOf("] ");
-            if (tsEnd == -1)
+            int itemStart = tsEnd + 2;
+            if (tsEnd == -1 || markerIndex <= itemStart)
                 return false;
 
-            int itemStart = tsEnd + 2;
-            int itemEnd = markerIndex;
-
-            string rawItem = logLine.Substring(itemStart, itemEnd - itemStart).Trim();
+            string rawItem = logLine.Substring(itemStart, markerIndex - itemStart).Trim();
+            if (rawItem.Length == 0)
+                return false;
 
             // Strip EQ grammatical prefixes ONLY when appropriate
             if (rawItem.StartsWith("A ", StringComparison.OrdinalIgnoreCase))
@@ -192,15 +213,17 @@ namespace BidBot.EQLogs
                     rawItem = rawItem.Substring(4);
             }
 
-            itemName = rawItem;
-
             int playerStart = markerIndex + marker.Length;
             int periodIndex = logLine.LastIndexOf('.');
-            if (periodIndex == -1 || periodIndex <= playerStart)
+            if (periodIndex <= playerStart)
                 return false;
 
-            playerName = logLine.Substring(playerStart, periodIndex - playerStart).Trim();
+            string player = logLine.Substring(playerStart, periodIndex - playerStart).Trim();
+            if (player.Length == 0)
+                return false;
 
+            itemName = rawItem;
+            playerName = player;
             return true;
         }
 
