@@ -16,25 +16,33 @@ namespace BidBot.Logic
         public string CreateDiscordText(Auction auction)
         {
             var sb = new StringBuilder();
-            sb.AppendLine($"## [{auction.Item.Name}]({auction.Item.LucyLink})");
+            // The sheet row is in the title, so it shows while bidding and on the finished message.
+            var row = auction.RowNumber.HasValue ? $" · Row {auction.RowNumber}" : string.Empty;
+            sb.AppendLine($"## [{auction.Item.Name}]({auction.Item.LucyLink}){row}");
 
             if (auction.IsClosed)
             {
+                // Finished auctions shrink to just the name and result, to keep the bid channel short.
                 if(!string.IsNullOrWhiteSpace(auction.Winner))
-                {
                     sb.AppendLine($"**WINNER:** {auction.Winner} for **{auction.WinAmount.ToString("#,###")}** platinum.");
-                    sb.AppendLine();
-                }
                 else
-                {
                     sb.AppendLine("**WINNER:** No one was interested.");
-                    sb.AppendLine();
-                }
+
+                return sb.ToString();
             }
 
 
-            var itemText = CreateDiscordText(auction.ItemMarkdown, auction.EndDT);
-            sb.AppendLine(itemText);
+            if (auction.IsPaused)
+            {
+                sb.AppendLine((auction.ItemMarkdown ?? string.Empty).Trim());
+                sb.AppendLine();
+                sb.AppendLine("**Paused** ⏸️ The timer is stopped until the officers resume auctions. Bids still count.");
+            }
+            else
+            {
+                var itemText = CreateDiscordText(auction.ItemMarkdown, auction.EndDT);
+                sb.AppendLine(itemText);
+            }
             sb.AppendLine("-------------------------------------------------");
             return sb.ToString();
         }

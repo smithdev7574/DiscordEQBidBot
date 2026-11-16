@@ -97,8 +97,12 @@ Open the `appsettings.json` next to `BidBot.exe` in Notepad and update the setti
 | `SheetSettings → SheetName` | `Raid Loot!` |
 | `SheetSettings → ItemNameColumn` / `HeldByColumn` | `A` / `B` |
 | `SheetSettings → WinnerColumn` / `AmountColumn` | `E` / `F` |
+| `Voice → IsEnabled` | `true` to announce auctions in voice, otherwise `false`. See [Voice Announcements](#voice-announcements). |
+| `Voice → VoiceChannelName` | `Raid` (the voice channel name, without the `#` prefix) |
+| `Voice → SpeechKey` | Replace the placeholder with your Azure Speech key, inside the existing quotation marks. |
+| `Voice → SpeechRegion` | `eastus` (your Azure Speech region) |
 
-Save `appsettings.json` on your PC and keep the edited file out of commits and shared copies. BidBot reads the saved token each time it starts.
+Save `appsettings.json` on your PC and keep the edited file out of commits and shared copies. BidBot reads the saved tokens and keys each time it starts.
 
 Double-click `BidBot.exe` in the extracted folder. Leave the bot window open during the raid.
 
@@ -107,8 +111,8 @@ Double-click `BidBot.exe` in the extracted folder. Leave the bot window open dur
 Use a test copy of the guild sheet and Discord channels set aside for testing. Check that your bot comes online and its slash commands appear under its app name.
 
 1. Run `/setsheet sheeturl:` and paste the test spreadsheet URL. The confirmation means the bot accepted the URL. The next step checks that it can write to the sheet.
-2. Generate a new `was given to` loot line in the monitored log. Check that the item and holder appear on the expected row. For a test with an existing log, attach a `.txt` file containing only the relevant loot lines to a `!bb manuallog` message while log parsing is enabled.
-3. Run `/auction` with `itemname`, `duration` (for example, `1`), and `rownumber` set to the actual row in the test sheet. Have a tester place a bid with the auction button. Keep DMs from server members enabled for bid and winner notifications. Confirm the award posts in Discord and the winner and amount appear in the right cells.
+2. Generate a new `was given to` loot line in the monitored log. Check that the item and holder appear on the expected row. For a test with an existing log, attach a `.txt` file containing only the relevant loot lines to a `!bb manuallog` message, or run `/simulateloot` to loot random items from past raids.
+3. Run `/auction` with `itemname`, `rownumber` set to the actual row in the test sheet, and `duration` (for example, `1`). Have a tester place a bid with the auction button. Keep DMs from server members enabled for bid and winner notifications. Confirm the award posts in Discord and the winner and amount appear in the right cells.
 4. Run `/endraid` when the test is complete. If it replies with both an end timestamp and `No active raid`, the end timestamp confirms it ended the raid.
 
 **First-run Google access error.** The first time BidBot tries to use the sheet, Google may return an error with a link asking you to enable access. Open the link from the bot window in your browser and sign in with the Google account that manages the project you created. If the page says the **Google Sheets API** is disabled, confirm it shows your project, then click **Enable**. Wait a few minutes and repeat the test with a new loot line or re-import the missed line. If the API is already enabled and Google reports that the service account lacks permission, have the guild folder owner check that the key’s `client_email` has **Editor** access. [Google’s API enablement guide](https://developers.google.com/workspace/guides/enable-apis)
@@ -117,7 +121,7 @@ Use a test copy of the guild sheet and Discord channels set aside for testing. C
 
 1. Confirm who is running the bot. Start EverQuest logging and BidBot before loot is handed out.
 2. Run `/setsheet sheeturl:` with the live raid spreadsheet. This starts the bot’s raid session. Set the sheet at the start of each raid since writes expire 24 hours after it was set.
-3. Check that new loot appears in the sheet. Start each auction with `/auction` and the matching `rownumber` so the result goes back to the correct row. Keep auctioned rows in place until their results are written.
+3. Check that new loot appears in the sheet and the Loot Queue post. When you're ready, press **Start Auctions** on the post, or start auctions by hand with `/auction` and the matching `rownumber` so the result goes back to the correct row. Keep auctioned rows in place until their results are written.
 4. Let all auctions finish and verify the results against the sheet. Run `/endraid`, then close the bot window. Keep the bot running until auctions finish because open bids are held in memory.
 
 | If you see… | Check… |
@@ -152,6 +156,47 @@ was given to
 10. At the end of the raid, run `/endraid`.
 
 The resulting sheet contains all auction results needed to calculate and distribute the raid split.
+
+## Loot Queue
+
+When the log parser adds an item to the sheet, BidBot also adds it to the **Loot Queue** post in `LootQueueChannelName` (or `BidChannelName` when that's blank). Nothing is auctioned yet. The post lists:
+
+- **Bidding now:** items with an auction running
+- **Waiting:** items not auctioned yet, in sheet row order
+- **Needs an officer:** items the queue can't start on its own, for example a name that isn't in the item list. Start these with `/auction` and the row number.
+
+When the list outgrows one Discord message, BidBot continues it in overflow messages below the main post. A dedicated channel keeps the post easy to find. In the bid channel, new auctions push it up.
+
+Officers (Manage Server) control auctions with the buttons on the post:
+
+| Button | What it does |
+| --- | --- |
+| **Start Auctions** | Starts the next waiting item, then another every 30 seconds (change it with [/setspacing](#setspacing)), each running the raid's default length (see [/setduration](#setduration)). Only one auction per item name runs at a time: a second copy of an item waits until the first one closes. New loot joins the line while it's on. |
+| **Stop Auctions** | Stops starting new auctions, for example during a hard fight. Auctions already running keep going. |
+| **Pause Active** | Stops the timer on every running auction and holds auto-start. Bids still count while paused. |
+| **Resume Active** | Restarts the paused timers with the time they had left (at least 30 seconds), and auto-start continues if it's on. |
+| **Remove Item** | Asks for a sheet row number, takes that item out of the queue, and clears its row on the sheet (item, holder, winner, amount, and the auction-started and paid boxes), for loot that shouldn't be auctioned. The row is cleared rather than deleted so the rows below keep their numbers, and the next loot fills it. Only items still in the queue and not being auctioned can be removed, so a running or awarded row is never cleared. An item picker still posted for the row is deleted too, so it can't start an auction on a row new loot has taken. |
+
+When an auction starts, BidBot checks the row's `AuctionStartedColumn` box on the sheet. When an officer presses **Cancel Auction**, the item goes back to **Waiting** and the box is unchecked. With auto-start on, it's auctioned again later, so use **Remove Item** for anything that shouldn't be.
+
+`/auction` and `!bb auction` still work (both require the sheet row number), and the post tracks them whether or not **Start Auctions** is on. Starting an auction for a queued row moves that item to **Bidding now**. A row the queue doesn't have yet (for example loot from before the bot started) is added to **Bidding now**.
+
+If a name matches several items in the item list, the item picker is posted (by the queue when the item's turn comes, or by an auction command). The item waits in **Bidding now** until an officer picks the right version, and auto-start won't post a second picker for it.
+
+The queue is saved in `bidbotdata.json`. Auctions are held in memory, so after a restart anything that was running goes back to **Waiting**, its sheet box is unchecked, and auto-start is off until an officer presses **Start Auctions**. `/endraid` clears the queue, removes the buttons from the post (which keeps a list of anything left waiting), deletes any item pickers still waiting, and resumes paused auctions. Waiting items keep their sheet rows, so they can still be auctioned later with `/auction`. Auctions already running finish normally and are recorded on the raid they started in. After `/endraid`, cancelling or starting an auction doesn't open a new Loot Queue post. The next `/setsheet` raid gets a fresh one with its first loot.
+
+## Payment Reminders
+
+Once one of a winner's items has been won for `PaymentReminderMinutes` (45 by default), BidBot checks the `PaidColumn` checkbox for every item that person has won in the raid. If any are still unchecked, BidBot mentions the winner in the award channel with all of them:
+
+```text
+@Winner You still need to pay for Arx Key, Ancient: Lifebane, please pay promptly.
+```
+
+- Every item in a reminder is marked as covered, so it doesn't trigger another reminder on its own. When the same person wins something new, that item's reminder lists everything they still haven't paid for.
+- If the sheet's Winner cell no longer matches the auction winner (for example, an officer reassigned the item), that item is skipped.
+- Reminders run for the active raid only, so run `/endraid` once everything is paid.
+- Only auctions with a row number are checked.
 
 ---
 
@@ -194,13 +239,45 @@ Parameters:
 | Parameter | Required | Description |
 |------------|----------|-------------|
 | itemname | Yes | Item being auctioned |
-| duration | No | Auction duration in minutes |
-| rownumber | No | Row number on the Google Sheet |
+| rownumber | Yes | Row number on the Google Sheet, where the winner is written |
+| duration | No | Auction duration in minutes. Defaults to the raid's length from `/setduration` (5 unless changed). |
 
 Example:
 
 ```text
-/auction itemname:Fungi Tunic duration:2
+/auction itemname:Fungi Tunic rownumber:12 duration:2
+```
+
+---
+
+## /setduration
+
+Sets how long auctions run by default for the rest of the current raid, for example shorter auctions on the last boss. Requires the Manage Server permission and an active raid.
+
+| Parameter | Required | Description |
+|------------|----------|-------------|
+| minutes | Yes | Auction length in minutes, 1 to 60 |
+
+The new length applies to auctions the Loot Queue starts and to `/auction` without a `duration`. Auctions already running keep their time, and `!bb auction` still uses the duration it's given. The Loot Queue post shows the current length. Each new raid (`/setsheet`) starts back at `DefaultAuctionDuration` (5 minutes unless changed).
+
+```text
+/setduration minutes:2
+```
+
+---
+
+## /setspacing
+
+Sets how many seconds apart the Loot Queue starts auctions for the rest of the current raid. Requires the Manage Server permission and an active raid.
+
+| Parameter | Required | Description |
+|------------|----------|-------------|
+| seconds | Yes | Seconds between auctions, 10 to 600 |
+
+It takes effect right away: the next auction starts once that many seconds have passed since the last one started. The Loot Queue post shows the current spacing. Each new raid (`/setsheet`) starts back at `QueuedAuctionSpacingSeconds` (30 seconds unless changed).
+
+```text
+/setspacing seconds:15
 ```
 
 ---
@@ -234,6 +311,43 @@ Parameters:
 | Parameter | Required | Description |
 |------------|----------|-------------|
 | itemname | Yes | Item to add or remove |
+
+---
+
+## /voicetest
+
+Has the bot join the voice channel and speak, so you can check voice announcements before the raid. Requires the Manage Server permission.
+
+| Parameter | Required | Description |
+|------------|----------|-------------|
+| text | No | What the bot should say |
+
+---
+
+## /additem
+
+Adds one item to the sheet and the Loot Queue by hand, as if it was looted. Use it for loot the EQ log missed when you don't want to import the whole log. Requires the Manage Server permission and an active raid.
+
+| Parameter | Required | Description |
+|------------|----------|-------------|
+| itemname | Yes | The item to add. Suggests names from the item list as you type (3+ characters) |
+| holder | No | Who is holding the item. Defaults to `Manual` |
+
+The item gets the next open sheet row and shows up in the Loot Queue within a few seconds, the same as EQ log loot. `!bb additem` does the same thing as a text command.
+
+---
+
+## /simulateloot
+
+For testing. Adds random items from past raids to the current raid as if they had just been looted. Requires the Manage Server permission, an active raid, and a sheet set within the last 24 hours.
+
+| Parameter | Required | Description |
+|------------|----------|-------------|
+| count | No | How many items to loot, 1 to 50 (default 5) |
+
+BidBot writes a `was given to` line for each item into the same queue the EQ log reader uses, so each item gets a sheet row and a Loot Queue entry exactly like real loot. The holder is `Simulated`. The same item can be picked more than once, which is handy for testing that duplicates wait for each other. With no raid history yet, items come from the item list instead.
+
+Use a test sheet: the rows are real rows on whatever sheet `/setsheet` last set. Press **Remove Item** on the Loot Queue for each one when you're done (it clears the sheet row too), or run `/endraid` and clear the rows by hand.
 
 ---
 
@@ -292,7 +406,7 @@ The command accepts either:
 - An attached EQ log (`.txt`) file.
 - Pasted EverQuest log text in the same message.
 
-Keep live log parsing enabled while importing so the bot processes the supplied entries.
+Imported lines are processed even when live log parsing is turned off.
 
 This is useful when:
 
@@ -307,6 +421,30 @@ was given to
 ```
 
 Occasionally the parser will identify items that should not be auctioned. If that happens, simply delete the unwanted row from the spreadsheet.
+
+---
+
+## Add Item
+
+Adds a single item to the sheet and the Loot Queue by hand, without importing any log text.
+
+```text
+!bb additem <itemName> [| <holder>]
+```
+
+Examples:
+
+```text
+!bb additem Cloak of Flames
+!bb additem Cloak of Flames | Soandso
+```
+
+| Argument | Description |
+|-----------|-------------|
+| itemName | Item to add, as it appears in the item list |
+| holder | Optional. Who is holding the item. Defaults to `Manual` |
+
+The item goes through the same path as EQ log loot: it gets the next open sheet row, is added to the raid's loot list and shows up in the Loot Queue within a few seconds (one log poll). It's auctioned like any other queued item. Requires an active raid (`/setsheet`). The bot replies in the channel to confirm, or to say why the item wasn't added.
 
 ---
 
@@ -389,6 +527,14 @@ Example:
   "Discord": {
     "Token": "YourDiscordTokenHere"
   },
+  "Voice": {
+    "IsEnabled": false,
+    "VoiceChannelName": "YourVoiceChannelNameHere",
+    "SpeechKey": "YourAzureSpeechKeyHere",
+    "SpeechRegion": "YourAzureSpeechRegionHere",
+    "AnnouncementTemplate": "Bidding is now open for {ItemName}",
+    "...": "see Voice Settings below for the rest"
+  },
   "EQLogParseSettings": {
     "ShouldParseLogFile": true,
     "EQLogFile": "FullPathIncludingExtensionToLogFileHere",
@@ -426,6 +572,11 @@ Example:
 | AwardChannelName | Channel used to announce completed auctions |
 | ShouldLogToChannel | Enables Discord log messages |
 | MessagePrefix | Prefix for text commands |
+| LootQueueChannelName | Channel for the Loot Queue post. Leave blank to use `BidChannelName`. See [Loot Queue](#loot-queue). |
+| DefaultAuctionDuration | Minutes an auction runs when the Loot Queue starts it or `/auction` has no `duration`. Defaults to `5`. `/setduration` changes it for the current raid. |
+| QueuedAuctionSpacingSeconds | Seconds between auctions the Loot Queue starts, 10 to 600. Defaults to `30`. `/setspacing` changes it for the current raid. |
+| PaymentReminderMinutes | Minutes after winning before an unpaid winner is mentioned. Defaults to `45`. `0` turns reminders off. See [Payment Reminders](#payment-reminders). |
+| PaymentReminderChannelName | Channel for payment reminders. Leave blank to use `AwardChannelName`. |
 
 ---
 
@@ -450,12 +601,81 @@ Example:
 | AmountColumn | Column used for winning bids |
 | ItemNameColumn | Column containing item names |
 | HeldByColumn | Column containing the officer holding the item |
+| AuctionStartedColumn | Optional. Checkbox column BidBot checks when an auction starts and unchecks when it's cancelled, for example `C`. Leave blank to skip. |
+| PaidColumn | Optional. Checkbox column officers check when an item is paid for, for example `G`. Payment reminders are off when blank. |
 
+---
 
+## Voice Settings
+
+| Setting | Description |
+|----------|-------------|
+| IsEnabled | Turns voice announcements on or off. Defaults to `false`. |
+| VoiceChannelName | Name of the voice channel the bot joins to announce auctions |
+| SpeechKey | Azure Speech resource key (*Key 1*). Keep the edited file out of commits and shared copies. |
+| SpeechRegion | Azure Speech resource region, for example `eastus` |
+| AnnouncementTemplate | What the bot says. `{ItemName}` is replaced with the item name. |
+| SpeakingRate | SSML speaking rate, for example `0%`, `-10%`, `+10%` |
+| Volume | Playback volume, `0.0` to `2.0` (1.0 is normal) |
+| IdleLeaveSeconds | Outside a raid, how long the bot waits for more announcements before leaving the channel |
+| StayConnectedDuringRaid | `true` (default) keeps the bot in the voice channel from `/setsheet` until `/endraid`. `false` joins and leaves for every announcement. |
+| MaxRaidHours | Safety limit: the bot leaves the voice channel this many hours after the raid started, even if nobody ran `/endraid` (1 to 24, default 6) |
+| ConnectTimeoutSeconds | Safety-net timeout for joining the voice channel (20 to 120 seconds). Discord.Net gives up after 15 seconds on its own. |
+| DebugLogging | `true` shows detailed Discord and libdave voice connection logs in the bot window. Leave `false` normally. |
+| MaxQueueSize | Most announcements held at once. The oldest are dropped when full. |
+| CachePath | Folder for cached announcement audio |
+| LocaleFilter | When `AllowedVoices` is empty, use every Azure voice whose name starts with this, for example `en-` |
+| AllowedVoices | Azure voice names to pick from at random |
+| Pronunciations | Word replacements for names the voices say wrong, for example `"Gindan": "Gin Dan"` |
+
+---
+
+# Voice Announcements
+
+When `Voice:IsEnabled` is `true`, BidBot says "Bidding is now open for *item*" in `VoiceChannelName` whenever an auction starts.
+
+- **During a raid:** BidBot joins the voice channel when `/setsheet` starts the raid and stays until `/endraid`, so announcements play right away with no join and leave chimes. If Discord drops the connection, it rejoins within a minute. If BidBot restarts mid-raid, it rejoins once it reconnects to Discord. It leaves on its own after `MaxRaidHours` if nobody ends the raid.
+- **Outside a raid**, or when `StayConnectedDuringRaid` is `false`: BidBot joins when an auction starts and leaves once nothing else is queued. Announcements play one at a time in order, and announcements for auctions that ended or were cancelled before their turn are skipped. If voice isn't set up correctly, BidBot logs why at startup and every other feature works as normal.
+
+## Setup
+
+1. **Create an Azure Speech resource.** In the Azure portal, create a *Speech service* resource and copy *Key 1* and the *Location/Region* from **Keys and Endpoint**.
+2. **Add the key to `appsettings.json`.** Open the `appsettings.json` next to `BidBot.exe` in Notepad. In the `Voice` section, replace `YourAzureSpeechKeyHere` with *Key 1* and `YourAzureSpeechRegionHere` with the region (for example `eastus`), inside the existing quotation marks. Keep the edited file out of commits and shared copies, the same as the Discord token.
+
+3. **Native voice libraries (already included).** Discord requires end-to-end encrypted voice (DAVE), and Discord.Net needs three native libraries next to `BidBot.exe`:
+   - `opus.dll` and `libsodium.dll` come from NuGet (`DSharpPlus.Natives.Opus` and `libsodium`) and are copied automatically.
+   - `libdave.dll` (v1.2.2) is already in the `Natives` folder. It comes from Discord's official releases at <https://github.com/discord/libdave/releases> (`libdave-Windows-X64-boringssl.zip`). To update it, replace `Natives\libdave.dll` and the `libdave`, `boringssl`, `mlspp` and `nlohmann-json` license files in `ThirdPartyNotices`. v1.1.1 is the minimum version Discord.Net supports. See <https://docs.discordnet.dev/guides/voice/libdave.html>.
+4. **Give the bot voice permissions.** The bot needs **Connect** and **Speak** in the voice channel.
+5. **Turn it on.** Set `Voice:IsEnabled` to `true` and `Voice:VoiceChannelName` to your channel, then restart BidBot.
+6. **Test it.** Run `/voicetest` and listen in the voice channel.
+
+## Known Issue
+
+Discord.Net 3.20.2 has a bug in its voice encryption (DAVE) code: when the bot joins a voice channel with other people in it, the encryption handshake fails over and over until Discord disconnects the bot with close code 4021 ("Rate limited"). The bot appears to speak but nobody hears it. The fix ([Discord.Net PR #3288](https://github.com/discord-net/Discord.Net/pull/3288)) is merged but not yet released.
+
+Until it is, BidBot uses a patched Discord.Net: the official 3.20.2 source with only that fix applied, built as version `3.20.3-davefix.1`. The packages are in the `LocalPackages` folder, and `nuget.config` tells NuGet to look there.
+
+**When an official Discord.Net release newer than 3.20.2 is out:**
+1. Delete the `LocalPackages` folder and `nuget.config`.
+2. In `BidBot.csproj`, replace the three `Discord.Net.WebSocket` / `Discord.Net.Commands` / `Discord.Net.Interactions` references with `<PackageReference Include="Discord.Net" Version="<new version>" />`.
+3. Rebuild, run `/voicetest` with a few people in the voice channel, and remove this section.
+
+## Troubleshooting
+
+| Log message | What to check |
+|---|---|
+| `Voice announcements are disabled: ...` | The message says which setting or library is missing. |
+| `Can't join voice channel ... missing these permissions` | Give the bot role **View Channel**, **Connect** and **Speak** on that voice channel (check the channel's permission overrides too). |
+| `Voice channel '...' not found` | `VoiceChannelName` must match the channel name exactly, without the `#`. |
+| `Discord did not finish connecting` or `Timed out joining voice channel` | Usually Windows Firewall blocking BidBot's voice (UDP) traffic. Open **Windows Security → Firewall & network protection → Allow an app through firewall** and allow `BidBot.exe` (or `dotnet.exe` when running from Visual Studio) on the network you use. If it still fails, set `DebugLogging` to `true`, restart, run `/voicetest`, and look for lines starting with `Audio` or `libdave`. |
+
+Generated audio is cached in `CachePath`, so Azure is only called the first time an item is announced. Each item keeps the random voice it got the first time. Delete the cache folder to re-roll voices.
 
 # License
 
 This project is licensed under the MIT License.
+
+Voice announcements include third-party native libraries: libsodium (ISC License), Opus (BSD 3-Clause License), and Discord's libdave (MIT License), which includes BoringSSL (OpenSSL / ISC), MLSpp (BSD 2-Clause) and nlohmann/json (MIT). Their license texts are in the `ThirdPartyNotices` folder and are included with every build.
 
 You are free to use, modify, and distribute the software. It is provided "as is" without warranty of any kind.
 

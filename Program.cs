@@ -6,6 +6,7 @@ using BidBot.Items;
 using BidBot.Logic;
 using BidBot.Messaging;
 using BidBot.Sheets;
+using BidBot.Voice;
 using Discord;
 using Discord.Commands;
 using Discord.WebSocket;
@@ -15,12 +16,20 @@ using System.Text;
 var builder = Host.CreateApplicationBuilder(args);
 IConfiguration configuration = builder.Configuration;
 
+bool.TryParse(configuration["Voice:IsEnabled"], out var isVoiceEnabled);
+bool.TryParse(configuration["Voice:DebugLogging"], out var isVoiceDebugLogging);
+
 var client = new DiscordSocketClient(new DiscordSocketConfig()
 {
     GatewayIntents = GatewayIntents.Guilds
         | GatewayIntents.GuildMessages
         | GatewayIntents.MessageContent
         | GatewayIntents.GuildMembers
+        | GatewayIntents.GuildVoiceStates,
+    // Discord requires DAVE end to end encryption for voice, which needs libdave next to the exe.
+    EnableVoiceDaveEncryption = isVoiceEnabled,
+    // Voice:DebugLogging shows Discord.Net's detailed voice connection steps for troubleshooting.
+    LogLevel = isVoiceDebugLogging ? LogSeverity.Debug : LogSeverity.Info
 });
 client.Log += Client_Log;
 
@@ -41,6 +50,7 @@ await client.StartAsync();
 builder.Services.AddSingleton<IConfiguration>(configuration);
 builder.Services.AddHostedService<Worker>();
 builder.Services.AddHostedService<BidTimerWorker>();
+builder.Services.AddHostedService<PaymentReminderWorker>();
 builder.Services.AddSingleton(client);
 
 //Data
@@ -71,6 +81,9 @@ builder.Services.AddScoped<ItemStatsScraper>();
 
 // Bot logic
 builder.Services.AddSingleton<AuctionStore>();
+builder.Services.AddSingleton<AuctionTimingService>();
+builder.Services.AddSingleton<LootQueueService>();
+builder.Services.AddHostedService(sp => sp.GetRequiredService<LootQueueService>());
 builder.Services.AddScoped<BidBot.Logic.BidService>();
 builder.Services.AddScoped<BidDiscordMessageFactory>();
 builder.Services.AddScoped<WishlistService>();
@@ -79,6 +92,14 @@ builder.Services.AddScoped<WishlistService>();
 //EQLogs
 builder.Services.AddHostedService<EQLogWorker>();
 builder.Services.AddScoped<ManualEQLogService>();
+
+//Voice
+builder.Services.AddSingleton<VoiceSettings>();
+builder.Services.AddSingleton<VoiceCache>();
+builder.Services.AddSingleton<VoiceSelector>();
+builder.Services.AddSingleton<VoiceService>();
+builder.Services.AddSingleton<VoiceCommunicationService>();
+builder.Services.AddHostedService(sp => sp.GetRequiredService<VoiceCommunicationService>());
 
 
 var services = builder.Services.BuildServiceProvider();

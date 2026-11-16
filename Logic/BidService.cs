@@ -4,6 +4,7 @@ using BidBot.Infrastructure;
 using BidBot.Items;
 using BidBot.Messaging;
 using BidBot.Sheets;
+using BidBot.Voice;
 using Discord;
 using Discord.Interactions;
 using Discord.WebSocket;
@@ -33,6 +34,10 @@ namespace BidBot.Logic
         private readonly MultiItemAuctionStore multiStore;
         private readonly PermissionCalculator permissionCalculator;
         private readonly GoogleSheetService sheetService;
+        private readonly VoiceSettings voiceSettings;
+        private readonly VoiceCommunicationService voiceCommunication;
+        private readonly LootQueueService lootQueue;
+        private readonly ILogger<BidService> logger;
 
         public BidService(IConfiguration config,
             ItemStatsScraper scraper,
@@ -47,8 +52,14 @@ namespace BidBot.Logic
             WishlistService wishlistService,
             MultiItemAuctionStore multiStore,
             PermissionCalculator permissionCalculator,
-            GoogleSheetService sheetService)
+            GoogleSheetService sheetService,
+            VoiceSettings voiceSettings,
+            VoiceCommunicationService voiceCommunication,
+            LootQueueService lootQueue,
+            ILogger<BidService> logger)
         {
+            this.lootQueue = lootQueue;
+            this.logger = logger;
             this.config = config;
             this.scraper = scraper ?? throw new ArgumentNullException(nameof(scraper));
             this.itemFactory = itemFactory ?? throw new ArgumentNullException(nameof(itemFactory));
@@ -63,9 +74,11 @@ namespace BidBot.Logic
             this.multiStore = multiStore;
             this.permissionCalculator = permissionCalculator;
             this.sheetService = sheetService;
+            this.voiceSettings = voiceSettings;
+            this.voiceCommunication = voiceCommunication;
         }
 
-        public async Task<(bool WasSuccess, string Message)> StartBidByName(ulong guildID, ulong userID, string itemName, int duration, int? rowNumber)
+        public async Task<(bool WasSuccess, string Message)> StartBidByName(ulong guildID, ulong userID, string itemName, int duration, int rowNumber)
         {
             if (string.IsNullOrWhiteSpace(itemName))
                 throw new ArgumentNullException(nameof(itemName));
@@ -84,49 +97,19 @@ namespace BidBot.Logic
 
             if (items.Count() > 1)
             {
-                var multiItemAuction = new MultiItemAuction()
+                // Shows the queued item as waiting for a pick, so auto-start doesn't post a second picker.
+                try
                 {
-                    ID = Guid.NewGuid(),
-                    Duration = duration,
-                    UserID = userID,
-                    GuildID = guildID,
-                    RowNumber = rowNumber
-                };
-
-                var mention = MentionUtils.MentionUser(userID);
-                var mainMessage = await communication.SendMessageByChannelName(guildID, bidChannel, $"{mention} There are multiple entries for {itemName}, please pick one below!");
-                
-                multiItemAuction.MessageID = mainMessage?.Id;
-                multiItemAuction.ChannelID = mainMessage?.Channel.Id;
-
-                foreach (var item in items)
+                    await lootQueue.OnPickerPosted(rowNumber);
+                }
+                catch (Exception ex)
                 {
-                    var multiItem = new MultiItemAuction.MultiItemAuctionItem()
-                    {
-                        ItemID = item.ID,
-                        ItemMarkdown = await getItemMarkdown(item),
-                        ItemName = item.Name,
-                    };
-
-
-                    StringBuilder sb = new StringBuilder();
-                    sb.AppendLine("----------------------------------------------------");
-
-                    var abbreviatedMarkdown = await getItemMarkdown(item);
-                    sb.AppendLine($"Item ID: {item.ID}");
-                    sb.AppendLine(abbreviatedMarkdown);
-
-                    var builder = new ComponentBuilder();
-                    builder.WithButton(FunnyButtonPhrases.GetRandom(), $"{ButtonHandler.MULTI_ITEM_PICK}:{multiItemAuction.ID}:{item.ID}", ButtonStyle.Success);
-                    var component = builder.Build();
-
-                    var itemMessage = await communication.SendMessageByChannelName(guildID, bidChannel, sb.ToString(), component);
-
-                    multiItem.MessageID = itemMessage.Id;
-                    multiItemAuction.Items.Add(multiItem);
+                    logger.LogError(ex, "Couldn't update the loot queue for the {Item} item picker.", itemName);
                 }
 
-                multiStore.Add(multiItemAuction);
+                var mention = MentionUtils.MentionUser(userID);
+                await postItemPicker(guildID, bidChannel, userID, itemName, items.ToList(), duration, rowNumber,
+                    $"{mention} There are multiple entries for {itemName} (row {rowNumber}), please pick one below!");
 
                 return (true, "Found multiple items, choose one...");
             }
@@ -134,7 +117,54 @@ namespace BidBot.Logic
             return await StartBid(guildID, userID, items.First().ID, duration, rowNumber);
         }
 
-        public async Task<(bool WasSuccess, string Message)> StartBid(ulong guildID, ulong userID, int itemID, int duration, int? rowNumber)
+        private async Task<MultiItemAuction> postItemPicker(ulong guildID, string bidChannel, ulong userID, string itemName, List<ItemEntry> items,
+            int duration, int rowNumber, string headerText)
+        {
+            var multiItemAuction = new MultiItemAuction()
+            {
+                ID = Guid.NewGuid(),
+                Duration = duration,
+                UserID = userID,
+                GuildID = guildID,
+                RowNumber = rowNumber,
+                SearchName = itemName.Trim(),
+            };
+
+            var mainMessage = await communication.SendMessageByChannelName(guildID, bidChannel, headerText);
+
+            multiItemAuction.MessageID = mainMessage?.Id;
+            multiItemAuction.ChannelID = mainMessage?.Channel.Id;
+
+            foreach (var item in items)
+            {
+                var itemMarkdown = await getItemMarkdown(item);
+                var multiItem = new MultiItemAuction.MultiItemAuctionItem()
+                {
+                    ItemID = item.ID,
+                    ItemMarkdown = itemMarkdown,
+                    ItemName = item.Name,
+                };
+
+                StringBuilder sb = new StringBuilder();
+                sb.AppendLine("----------------------------------------------------");
+                sb.AppendLine($"Item ID: {item.ID}");
+                sb.AppendLine(itemMarkdown);
+
+                var builder = new ComponentBuilder();
+                builder.WithButton(FunnyButtonPhrases.GetRandom(), $"{ButtonHandler.MULTI_ITEM_PICK}:{multiItemAuction.ID}:{item.ID}", ButtonStyle.Success);
+                var component = builder.Build();
+
+                var itemMessage = await communication.SendMessageByChannelName(guildID, bidChannel, sb.ToString(), component);
+
+                multiItem.MessageID = itemMessage.Id;
+                multiItemAuction.Items.Add(multiItem);
+            }
+
+            multiStore.Add(multiItemAuction);
+            return multiItemAuction;
+        }
+
+        public async Task<(bool WasSuccess, string Message)> StartBid(ulong guildID, ulong userID, int itemID, int duration, int rowNumber)
         {
             var store = itemListStore.Get();
             if (!store.TryGetById(itemID, out var item) || item == null)
@@ -160,16 +190,12 @@ namespace BidBot.Logic
                 Duration = duration,
                 EndDT = endDT,
                 Item = item,
-                RowNumber = rowNumber
+                RowNumber = rowNumber,
+                RaidID = dataStore.ActiveRaid?.RaidID
             };
 
             var messageMarkdown = messageFactory.CreateDiscordText(auction);
-
-            var builder = new ComponentBuilder();
-            builder.WithButton("Place Bid", $"{ButtonHandler.PLACE_BID}:{auction.AuctionID}", ButtonStyle.Primary);
-            builder.WithButton("Cancel Bid", $"{ButtonHandler.CANCEL_BID}:{auction.AuctionID}", ButtonStyle.Danger);
-            builder.WithButton("Cancel Auction", $"{ButtonHandler.CANCEL_AUCTION}:{auction.AuctionID}", ButtonStyle.Secondary);
-            var component = builder.Build();
+            var component = buildAuctionComponents(auction);
             var userMessage = await communication.SendMessageByChannelName(guildID, bidChannel, messageMarkdown, component, flags: MessageFlags.SuppressEmbeds);
 
             auction.MessageID = userMessage.Id;
@@ -177,8 +203,36 @@ namespace BidBot.Logic
 
             auctionStore.Add(auction);
 
+            // Links the auction to its loot queue item (by row), or adds it if the queue doesn't have that row.
+            try
+            {
+                await lootQueue.OnAuctionStarted(auction);
+            }
+            catch (Exception ex)
+            {
+                logger.LogError(ex, "Couldn't update the loot queue for {Item}.", item.Name);
+            }
+
+            // Only queues the announcement, never waits on (or fails because of) voice.
+            if (voiceSettings.IsEnabled)
+                voiceCommunication.AnnounceAuction(auction);
+
             var task = wishlistService.NotifyUsers(auction.Item.Name);
+
+            var sheetResult = await sheetService.SetAuctionStarted(rowNumber, true);
+            if (!sheetResult.WasSuccessful)
+                await communication.SendLogMessage(guildID, userID, $"Started {item.Name}, but couldn't check it off on the sheet: {sheetResult.Message}");
+
             return (true, $"Bid Started for {item.Name}");
+        }
+
+        private static MessageComponent buildAuctionComponents(Auction auction)
+        {
+            var builder = new ComponentBuilder();
+            builder.WithButton("Place Bid", $"{ButtonHandler.PLACE_BID}:{auction.AuctionID}", ButtonStyle.Primary);
+            builder.WithButton("Cancel Bid", $"{ButtonHandler.CANCEL_BID}:{auction.AuctionID}", ButtonStyle.Danger);
+            builder.WithButton("Cancel Auction", $"{ButtonHandler.CANCEL_AUCTION}:{auction.AuctionID}", ButtonStyle.Secondary);
+            return builder.Build();
         }
 
         public async Task RespondToCancelButton(Guid auctionID, SocketMessageComponent component)
@@ -261,6 +315,7 @@ namespace BidBot.Logic
             if (winner == null)
             {
                 auctionStore.Remove(auction.AuctionID);
+                await notifyLootQueueFinished(auction);
                 await communication.SendMessageByChannelName(auction.GuildID, awardChannel, auction.GetFinishMessage());
                 return;
             }
@@ -275,17 +330,21 @@ namespace BidBot.Logic
 
             auction.Winner = winner.Nickname;
             auction.WinAmount = winningAmount;
+            auction.WinnerUserID = winner.UserID;
+            auction.FinishedDT = DateTime.UtcNow;
 
             auctionStore.Remove(auction.AuctionID);
+            await notifyLootQueueFinished(auction);
 
             auction.FinalBids = bidders.ToList();
             dataStore.HistoricalAuctions[auction.AuctionID] = auction;
 
-            var activeRaid = dataStore.ActiveRaid;
-            if(activeRaid != null)
-            {
-                activeRaid.Auctions.Add(auction);
-            }
+            // The raid it started in, even if /endraid ran while it was going. Otherwise the active raid.
+            Raid? raid = null;
+            if (auction.RaidID.HasValue)
+                dataStore.Raids.TryGetValue(auction.RaidID.Value, out raid);
+            raid ??= dataStore.ActiveRaid;
+            raid?.Auctions.Add(auction);
             var task = dataStore.SaveChanges();
 
             await communication.SendMessageByChannelName(auction.GuildID, awardChannel, auction.GetFinishMessage());
@@ -297,6 +356,18 @@ namespace BidBot.Logic
                 await communication.SendMessageByChannelName(auction.GuildID, awardChannel, $"Issue Updating the Sheet: {sheetResult.Message}");
             }
 
+        }
+
+        private async Task notifyLootQueueFinished(Auction auction)
+        {
+            try
+            {
+                await lootQueue.OnAuctionFinished(auction);
+            }
+            catch (Exception ex)
+            {
+                logger.LogError(ex, "Couldn't update the loot queue after {Item} finished.", auction.ItemName);
+            }
         }
 
         public async Task ChooseMultiItem(Guid multiItemID, SocketMessageComponent component)
@@ -325,9 +396,18 @@ namespace BidBot.Logic
                 return;
             }
 
-            var result =  await StartBid(multiAuction.GuildID, multiAuction.UserID, itemID, multiAuction.Duration, multiAuction.RowNumber);
+            // Take it out of the store first so a double click can't create two auctions.
+            if (multiStore.Remove(multiItemID) == null)
+            {
+                await component.FollowupAsync("Someone already picked an item from this list.", ephemeral: true);
+                return;
+            }
+
+            var result = await StartBid(multiAuction.GuildID, multiAuction.UserID, itemID, multiAuction.Duration, multiAuction.RowNumber);
+
             if(!result.WasSuccess)
             {
+                multiStore.Add(multiAuction); // Put the list back so they can try again.
                 await communication.SendLogMessage(component.GuildId, component.User.Id, result.Message);
                 await component.FollowupAsync(result.Message, ephemeral: true);
                 return;
@@ -335,7 +415,6 @@ namespace BidBot.Logic
 
             await component.FollowupAsync(result.Message, ephemeral: true);
 
-            multiStore.Remove(multiItemID);
             await communication.DeleteMessage(multiAuction.GuildID, multiAuction.ChannelID ?? 0, multiAuction.MessageID ?? 0);
             foreach(var item in multiAuction.Items)
             {
@@ -355,6 +434,16 @@ namespace BidBot.Logic
 
             auction.CancelledDT = DateTime.UtcNow;
             auctionStore.Remove(auction.AuctionID);
+
+            // Back in line on the loot queue, and its auction-started box on the sheet is unchecked.
+            try
+            {
+                await lootQueue.OnAuctionCancelled(auction);
+            }
+            catch (Exception ex)
+            {
+                logger.LogError(ex, "Couldn't put {Item} back in the loot queue.", auction.ItemName);
+            }
 
             var mention = MentionUtils.MentionUser(component.User.Id);
             await component.FollowupAsync($"{mention} Cancelled the Auction for {auction.Item.Name}.");

@@ -32,9 +32,87 @@ namespace BidBot.DataAccess.Entities
         public int WinAmount { get; set; } = 1;
         public DateTime? CancelledDT { get; set; }
         public int? RowNumber { get; set; }
+
+        /// <summary>
+        /// The raid that was active when the auction started, so an auction still running at /endraid
+        /// is recorded on that raid when it finishes. Null for auctions from before this was tracked.
+        /// </summary>
+        public Guid? RaidID { get; set; }
         public List<Bidder> FinalBids { get; set; } = new List<Bidder>();
 
+        // Public setters so these come back from bidbotdata.json after a restart.
+        public ulong? WinnerUserID { get; set; }
+        public DateTime? FinishedDT { get; set; }
+
+        /// <summary>
+        /// When the payment check for this item was done: reminder sent, already paid, or skipped.
+        /// Set once so each item is only ever reminded about once.
+        /// </summary>
+        public DateTime? PaymentCheckedDT { get; set; }
+
+        /// <summary>
+        /// The timer is stopped (Pause Active Auctions on the loot queue post). Bids still work.
+        /// While paused EndDT is DateTime.MaxValue so the auction can't finish.
+        /// </summary>
+        public bool IsPaused { get; private set; }
+        public TimeSpan? PausedRemaining { get; private set; }
+
         public string ItemName => Item.Name;
+
+        /// <summary>
+        /// Stops the timer and remembers how much time was left. Returns false if it's already
+        /// paused, closed, cancelled, or about to end anyway.
+        /// </summary>
+        public async Task<bool> Pause()
+        {
+            await _lock.WaitAsync();
+            try
+            {
+                if (IsPaused || _isClosed || CancelledDT != null)
+                    return false;
+
+                var remaining = EndDT - DateTime.UtcNow;
+                if (remaining <= TimeSpan.FromSeconds(1))
+                    return false;
+
+                PausedRemaining = remaining;
+                EndDT = DateTime.MaxValue;
+                IsPaused = true;
+                return true;
+            }
+            finally
+            {
+                _lock.Release();
+            }
+        }
+
+        /// <summary>
+        /// Restarts the timer with the time that was left, but at least minimumRemaining so
+        /// people get a chance to bid after a fight.
+        /// </summary>
+        public async Task<bool> Resume(TimeSpan minimumRemaining)
+        {
+            await _lock.WaitAsync();
+            try
+            {
+                if (!IsPaused)
+                    return false;
+
+                var remaining = PausedRemaining ?? minimumRemaining;
+                if (remaining < minimumRemaining)
+                    remaining = minimumRemaining;
+
+                EndDT = DateTime.UtcNow.Add(remaining);
+                PausedRemaining = null;
+                IsPaused = false;
+                return true;
+            }
+            finally
+            {
+                _lock.Release();
+            }
+        }
+
         public bool IsClosed
         {
             get

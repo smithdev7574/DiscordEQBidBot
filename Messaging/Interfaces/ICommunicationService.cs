@@ -19,6 +19,7 @@ namespace BidBot.Messaging
         Task DeleteMessage(ulong guildID, ulong channelID, ulong messageID);
 
         Task UpdateMessage(ulong guildID, ulong channelID, ulong messageID, string content);
+        Task UpdateMessageAndComponents(ulong guildID, ulong channelID, ulong messageID, string content, MessageComponent components);
         Task UpdateMessageAndRemoveComponents(ulong guildID, ulong channelID, ulong messageID, string content);
         Task<RestUserMessage> SendLogMessage(ulong? guildID, ulong userID, string message);
     }

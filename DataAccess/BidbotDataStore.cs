@@ -22,6 +22,15 @@ namespace BidBot.DataAccess
         public ConcurrentDictionary<int, ItemHtmlEntry> ItemHtmlEntries => bidbotData.ItemHtmlEntries;
         public ConcurrentDictionary<Guid, Auction> HistoricalAuctions => bidbotData.HistoricalAuctions;
         public ConcurrentDictionary<Guid, Raid> Raids => bidbotData.Raids;
+        /// <summary>
+        /// A snapshot of the loot queue. LootQueueService replaces it with a fresh copy on every change
+        /// and never mutates it, so saving can't hit a list that's being changed.
+        /// </summary>
+        public LootQueue? LootQueue
+        {
+            get => bidbotData.LootQueue;
+            set => bidbotData.LootQueue = value;
+        }
         public BidBotSettings Settings => bidbotData.Settings;
 
         public BidbotDataStore(IConfiguration config)

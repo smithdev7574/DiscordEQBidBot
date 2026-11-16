@@ -44,38 +44,30 @@ namespace BidBot.EQLogs
         protected override async Task ExecuteAsync(CancellationToken stoppingToken)
         {
             var checkInterval = TimeSpan.FromSeconds(logParseInterval);
-            
-            if (!shouldParseLogFile)
-                return;
 
-            if (string.IsNullOrWhiteSpace(logFileName))
-            {
-                logger.LogInformation("No Log Parse Configuration...");
-                return;
-            }
+            // Even without a log file, lines from !bb manuallog and /simulateloot still need processing.
+            var readFile = shouldParseLogFile && !string.IsNullOrWhiteSpace(logFileName);
+            if (!readFile)
+                logger.LogInformation("EQ log file parsing is off, only manual and simulated loot will be processed.");
 
             long position = 0;
-            using (var posFile = File.Open(logFileName, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
+            if (readFile)
             {
+                using var posFile = File.Open(logFileName, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
                 position = posFile.Length;
             }
 
-
-
             while (!stoppingToken.IsCancellationRequested)
             {
-                if (!string.IsNullOrWhiteSpace(logFileName))
+                try
                 {
-                    try
-                    {
+                    if (readFile)
                         readLogFile(ref position);
-                        await processQueue();
-
-                    }
-                    catch (Exception ex)
-                    {
-                        logger.LogError(ex, "EQLogWorker encountered an error while polling the log");
-                    }
+                    await processQueue();
+                }
+                catch (Exception ex)
+                {
+                    logger.LogError(ex, "EQLogWorker encountered an error while polling the log");
                 }
 
                 try
@@ -95,44 +87,65 @@ namespace BidBot.EQLogs
             var scope = scopeFactory.CreateScope();
             var sheetService = scope.ServiceProvider.GetRequiredService<GoogleSheetService>();
 
+            // Collect everything looted since the last pass, then write it to the sheet in one go.
+            // One read and one write per pass keeps big loot drops under Google's per-minute limits.
+            var loot = new List<(string ItemName, string PlayerName)>();
             var hadUpdates = false;
             while (logStore.Dequeue(out var result))
             {
-                if (result.Contains("was given to", StringComparison.OrdinalIgnoreCase))
-                {
-                    hadUpdates = true;
-                    if (tryParseGivenItem(result, out var itemName, out var playerName))
-                    {
-                        var currentRaid = store.ActiveRaid;
-                        if (currentRaid == null || currentRaid.EndDT.HasValue)
-                            continue;
+                if (!result.Contains("was given to", StringComparison.OrdinalIgnoreCase))
+                    continue;
 
-                        currentRaid.LootedItems.Add((itemName, playerName));
-                        try
-                        {
-                            var addResult = await sheetService.AddItemToSheet(itemName, playerName);
-                            if(!addResult.WasSuccessful)
-                            {
-                                currentRaid.Errors.Add($"Error UpdatingSheet for item {itemName} : {addResult.Message} ");
-                                logger.LogCritical(addResult.Message);
-                            }
-                        }
-                        catch(Exception ex)
-                        {
-                            currentRaid.Errors.Add($"Error UpdatingSheet: {ex.Message} ");
-                            logger.LogError(ex, "Error Updating Sheet.");
-                        }
+                hadUpdates = true;
+                if (tryParseGivenItem(result, out var itemName, out var playerName))
+                    loot.Add((itemName, playerName));
+                else
+                    logger.LogWarning("Skipping malformed EQ loot line: {LogLine}", result);
+            }
+
+            var currentRaid = store.ActiveRaid;
+            if (loot.Count > 0 && currentRaid != null && !currentRaid.EndDT.HasValue)
+            {
+                currentRaid.LootedItems.AddRange(loot);
+                try
+                {
+                    var addResult = await sheetService.AddItemsToSheet(loot);
+                    if (!addResult.WasSuccessful)
+                    {
+                        var names = string.Join(", ", loot.Select(x => x.ItemName));
+                        currentRaid.Errors.Add($"Error UpdatingSheet for {names} : {addResult.Message} ");
+                        logger.LogCritical("Couldn't add {Items} to the sheet: {Message}", names, addResult.Message);
                     }
                     else
                     {
-                        logger.LogWarning("Skipping malformed EQ loot line: {LogLine}", result);
+                        for (int i = 0; i < loot.Count; i++)
+                            await addToLootQueue(scope, currentRaid.GuildID, loot[i].ItemName, addResult.Rows[i]);
                     }
+                }
+                catch (Exception ex)
+                {
+                    currentRaid.Errors.Add($"Error UpdatingSheet: {ex.Message} ");
+                    logger.LogError(ex, "Error Updating Sheet.");
                 }
             }
 
             if (hadUpdates)
             {
                 var task = store.SaveChanges(); // Don't care about waiting.
+            }
+        }
+
+        private async Task addToLootQueue(IServiceScope scope, ulong guildID, string itemName, int rowNumber)
+        {
+            // A loot queue problem must never stop loot from being logged to the sheet.
+            try
+            {
+                var lootQueue = scope.ServiceProvider.GetRequiredService<LootQueueService>();
+                await lootQueue.AddLoot(guildID, itemName, rowNumber);
+            }
+            catch (Exception ex)
+            {
+                logger.LogError(ex, "Error adding {Item} (row {Row}) to the loot queue.", itemName, rowNumber);
             }
         }
 

@@ -19,6 +19,16 @@ namespace BidBot.DataAccess.Entities
 
         public string SheetURL { get; set; }
         public string SheetID { get; set; }
+
+        /// <summary>
+        /// Minutes set with /setduration for this raid. Null uses Settings:DefaultAuctionDuration.
+        /// </summary>
+        public int? DefaultAuctionDuration { get; set; }
+
+        /// <summary>
+        /// Seconds between Loot Queue auctions set with /setspacing for this raid. Null uses Settings:QueuedAuctionSpacingSeconds.
+        /// </summary>
+        public int? AuctionSpacingSeconds { get; set; }
         public List<Auction> Auctions { get; set; } = new List<Auction>();
         public List<(string item, string character)> LootedItems = new List<(string item, string character)>();
         public List<string> Errors { get; set; } = new List<string>();
