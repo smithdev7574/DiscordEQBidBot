@@ -128,7 +128,19 @@ namespace BidBot
                     }
                     await message.DeleteAsync();
                     break;
-            }           
+                case "additem":
+                    // !bb additem <item name> [| <holder>]
+                    var addText = string.Join(" ", args);
+                    var separator = addText.IndexOf('|');
+                    var addItemName = separator >= 0 ? addText[..separator] : addText;
+                    var holder = separator >= 0 ? addText[(separator + 1)..] : null;
+
+                    var manualService = scope.ServiceProvider.GetRequiredService<ManualEQLogService>();
+                    var addResult = manualService.AddManualItem(addItemName, holder);
+                    await message.DeleteAsync();
+                    await message.Channel.SendMessageAsync(addResult.WasSuccessful ? $"✅ {addResult.Message}" : $"⚠️ {addResult.Message}");
+                    break;
+            }
         }
 
         protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -158,8 +170,9 @@ namespace BidBot
                 .WithAutocomplete(true));
 
             //bidCommand.AddOption(SlashCommandHandler.ITEM_NAME_ARGUMENT, ApplicationCommandOptionType.String, "The name of the item to auction.", isRequired: true);
-            bidCommand.AddOption(SlashCommandHandler.DURATION_ARGUMENT, ApplicationCommandOptionType.Integer, "The duration of the auction in minutes.", isRequired: false);
-            bidCommand.AddOption(SlashCommandHandler.ROW_NUMBER_ARGUMENT, ApplicationCommandOptionType.Integer, "The row of the item on the sheet.", isRequired: false);
+            // Discord requires required options to come before optional ones.
+            bidCommand.AddOption(SlashCommandHandler.ROW_NUMBER_ARGUMENT, ApplicationCommandOptionType.Integer, "The row of the item on the sheet.", isRequired: true);
+            bidCommand.AddOption(SlashCommandHandler.DURATION_ARGUMENT, ApplicationCommandOptionType.Integer, "The duration of the auction in minutes. Defaults to the raid's /setduration.", isRequired: false);
 
             var sheetCommand = new SlashCommandBuilder();
             sheetCommand.WithName(SlashCommandHandler.SET_SHEET_COMMAND);
@@ -184,6 +197,55 @@ namespace BidBot
                 .WithType(ApplicationCommandOptionType.String)
                 .WithAutocomplete(true));
 
+            var voiceTestCommand = new SlashCommandBuilder();
+            voiceTestCommand.WithName(SlashCommandHandler.VOICE_TEST_COMMAND);
+            voiceTestCommand.WithDescription("Has the bot join the voice channel and say something.");
+            voiceTestCommand.AddOption(SlashCommandHandler.VOICE_TEXT_ARGUMENT, ApplicationCommandOptionType.String, "What the bot should say.", isRequired: false);
+
+            var simulateLootCommand = new SlashCommandBuilder();
+            simulateLootCommand.WithName(SlashCommandHandler.SIMULATE_LOOT_COMMAND);
+            simulateLootCommand.WithDescription("Testing: adds random items from past raids to the current raid as if they were looted.");
+            simulateLootCommand.AddOption(new SlashCommandOptionBuilder()
+                .WithName(SlashCommandHandler.COUNT_ARGUMENT)
+                .WithDescription("How many items to loot (default 5).")
+                .WithRequired(false)
+                .WithType(ApplicationCommandOptionType.Integer)
+                .WithMinValue(1)
+                .WithMaxValue(SlashCommandHandler.MAX_SIMULATED_LOOT));
+
+            var setDurationCommand = new SlashCommandBuilder();
+            setDurationCommand.WithName(SlashCommandHandler.SET_DURATION_COMMAND);
+            setDurationCommand.WithDescription("Sets how long auctions run by default for the rest of this raid.");
+            setDurationCommand.AddOption(new SlashCommandOptionBuilder()
+                .WithName(SlashCommandHandler.MINUTES_ARGUMENT)
+                .WithDescription("Auction length in minutes.")
+                .WithRequired(true)
+                .WithType(ApplicationCommandOptionType.Integer)
+                .WithMinValue(AuctionTimingService.MIN_MINUTES)
+                .WithMaxValue(AuctionTimingService.MAX_MINUTES));
+
+            var setSpacingCommand = new SlashCommandBuilder();
+            setSpacingCommand.WithName(SlashCommandHandler.SET_SPACING_COMMAND);
+            setSpacingCommand.WithDescription("Sets how many seconds apart the Loot Queue starts auctions for the rest of this raid.");
+            setSpacingCommand.AddOption(new SlashCommandOptionBuilder()
+                .WithName(SlashCommandHandler.SECONDS_ARGUMENT)
+                .WithDescription($"Seconds between auctions, at least {AuctionTimingService.MIN_SPACING_SECONDS}.")
+                .WithRequired(true)
+                .WithType(ApplicationCommandOptionType.Integer)
+                .WithMinValue(AuctionTimingService.MIN_SPACING_SECONDS)
+                .WithMaxValue(AuctionTimingService.MAX_SPACING_SECONDS));
+
+            var addItemCommand = new SlashCommandBuilder();
+            addItemCommand.WithName(SlashCommandHandler.ADD_ITEM_COMMAND);
+            addItemCommand.WithDescription("Adds an item to the sheet and the Loot Queue as if it was looted.");
+            addItemCommand.AddOption(new SlashCommandOptionBuilder()
+                .WithName(SlashCommandHandler.ITEM_NAME_ARGUMENT)
+                .WithDescription("The name of the item to add")
+                .WithRequired(true)
+                .WithType(ApplicationCommandOptionType.String)
+                .WithAutocomplete(true));
+            addItemCommand.AddOption(SlashCommandHandler.HOLDER_ARGUMENT, ApplicationCommandOptionType.String, $"Who is holding the item (default {ManualEQLogService.MANUAL_LOOTER}).", isRequired: false);
+
             foreach (var guild in client.Guilds)
             {
                 try
@@ -193,6 +255,11 @@ namespace BidBot
                     commands.Add(wishListCommand.Build());
                     commands.Add(sheetCommand.Build());
                     commands.Add(endRaidCommand.Build());
+                    commands.Add(voiceTestCommand.Build());
+                    commands.Add(simulateLootCommand.Build());
+                    commands.Add(setDurationCommand.Build());
+                    commands.Add(setSpacingCommand.Build());
+                    commands.Add(addItemCommand.Build());
                     await guild.BulkOverwriteApplicationCommandAsync(commands.ToArray());
                     await guild.GetApplicationCommandAsync(guild.Id);
 

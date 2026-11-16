@@ -12,6 +12,7 @@ namespace BidBot.DataAccess
         public ConcurrentDictionary<int, ItemHtmlEntry> ItemHtmlEntries { get; set; } = new ConcurrentDictionary<int, ItemHtmlEntry>();
         public ConcurrentDictionary<Guid, Auction> HistoricalAuctions { get; set; } = new ConcurrentDictionary<Guid, Auction>();
         public ConcurrentDictionary<Guid, Raid> Raids { get; set; } = new ConcurrentDictionary<Guid, Raid>();
+        public LootQueue? LootQueue { get; set; }
         public BidBotSettings Settings { get; set; } = new BidBotSettings();
     }
 }

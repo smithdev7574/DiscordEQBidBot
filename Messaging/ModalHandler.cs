@@ -1,4 +1,6 @@
-﻿using BidBot.Logic;
+﻿using BidBot.Infrastructure;
+using BidBot.Logic;
+using Discord;
 using Discord.WebSocket;
 using System;
 using System.Collections.Generic;
@@ -10,6 +12,8 @@ namespace BidBot.Messaging
     {
         public const string PLACE_BID = "placebid";
         public const string AMOUNT_FIELD = "amount";
+        public const string QUEUE_REMOVE = "queueRemove";
+        public const string ROW_FIELD = "row";
         private readonly IServiceScopeFactory scopeFactory;
 
         public ModalHandler(IServiceScopeFactory scopeFactory)
@@ -35,11 +39,40 @@ namespace BidBot.Messaging
                     }
                     await bidService.RespondToBidModal(identifiers.AuctionID.Value, modal);
                     break;
+                case QUEUE_REMOVE:
+                    await removeFromQueue(scope, modal);
+                    break;
                 default:
                     await modal.FollowupAsync($"Unknown requests {identifiers.Prefix}", ephemeral: true);
                     break;
             }
 
+        }
+
+        private async Task removeFromQueue(IServiceScope scope, SocketModal modal)
+        {
+            var permission = scope.ServiceProvider.GetRequiredService<PermissionCalculator>()
+                .CheckManagerPermissions(modal.User as IGuildUser, "Remove Item");
+            // Replies delete themselves so they don't pile up under the Loot Queue post.
+            if (!permission.HasPermission)
+            {
+                await modal.FollowupThenExpire(permission.Message, InteractionExtensions.ErrorReply);
+                return;
+            }
+
+            var rowResult = modal.TryGetRequiredInt(ROW_FIELD, out var rowNumber);
+            if (!rowResult.WasSuccessful)
+            {
+                await modal.FollowupThenExpire(rowResult.Message, InteractionExtensions.ErrorReply);
+                return;
+            }
+
+            var lootQueue = scope.ServiceProvider.GetRequiredService<LootQueueService>();
+            var result = await lootQueue.RemoveRow(rowNumber);
+            await lootQueue.RefreshPost();
+
+            await scope.ServiceProvider.GetRequiredService<ICommunicationService>().SendLogMessage(modal.GuildId, modal.User.Id, result.Message);
+            await modal.FollowupThenExpire(result.Message, result.WasSuccessful ? InteractionExtensions.ShortReply : InteractionExtensions.ErrorReply);
         }
 
         private (string Prefix, Guid? AuctionID) getIdentifiers(string customID)

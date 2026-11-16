@@ -70,6 +70,9 @@ namespace BidBot.Logic
                     var communicationService = scope.ServiceProvider.GetRequiredService<ICommunicationService>();
                     var messageFactory = scope.ServiceProvider.GetRequiredService<BidDiscordMessageFactory>();
 
+                    // Paused auctions have no countdown (EndDT is MaxValue) and their message already says paused.
+                    all = all.Where(b => !b.IsPaused).ToList();
+
                     var closedAuctions = all.Where(b => b.EndDT <= DateTime.UtcNow && b.CancelledDT == null).ToList();
                     foreach (var closedAuction in closedAuctions)
                     {

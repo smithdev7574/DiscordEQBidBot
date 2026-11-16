@@ -116,6 +116,21 @@ namespace BidBot.Messaging
             }
         }
 
+        public async Task UpdateMessageAndComponents(ulong guildID, ulong channelID, ulong messageID, string content, MessageComponent components)
+        {
+            var guild = client.GetGuild(guildID);
+            var channel = guild?.GetTextChannel(channelID);
+
+            if (channel != null)
+            {
+                await channel.ModifyMessageAsync(messageID, msg =>
+                {
+                    msg.Content = content;
+                    msg.Components = components;
+                });
+            }
+        }
+
         public async Task UpdateMessageAndRemoveComponents(ulong guildID, ulong channelID, ulong messageID, string content)
         {
             var guild = client.GetGuild(guildID);

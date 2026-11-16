@@ -361,3 +361,7 @@ MigrationBackup/
 
 # Fody - auto-generated XML schema
 FodyWeavers.xsd
+# BidBot voice announcement cache (generated audio)
+Data/VoiceCache/
+# Patched Discord.Net packages (see nuget.config) must be committed
+!LocalPackages/*.nupkg

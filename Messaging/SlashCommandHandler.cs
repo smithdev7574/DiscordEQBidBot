@@ -4,6 +4,7 @@ using BidBot.Infrastructure;
 using BidBot.Logic;
 using BidBot.Messaging;
 using BidBot.Sheets;
+using BidBot.Voice;
 using Discord.Rest;
 using Discord.WebSocket;
 using System;
@@ -23,6 +24,17 @@ namespace BidBot.Messaging
         public const string SET_SHEET_COMMAND = "setsheet";
         public const string GOOGLE_SHEET_URL_ARGUMENT = "sheeturl";
         public const string END_RAID_COMMAND = "endraid";
+        public const string VOICE_TEST_COMMAND = "voicetest";
+        public const string VOICE_TEXT_ARGUMENT = "text";
+        public const string SIMULATE_LOOT_COMMAND = "simulateloot";
+        public const string COUNT_ARGUMENT = "count";
+        public const int MAX_SIMULATED_LOOT = 50;
+        public const string SET_DURATION_COMMAND = "setduration";
+        public const string MINUTES_ARGUMENT = "minutes";
+        public const string SET_SPACING_COMMAND = "setspacing";
+        public const string SECONDS_ARGUMENT = "seconds";
+        public const string ADD_ITEM_COMMAND = "additem";
+        public const string HOLDER_ARGUMENT = "holder";
         private readonly IServiceScopeFactory scopeFactory;
         private readonly BidbotDataStore store;
 
@@ -51,7 +63,198 @@ namespace BidBot.Messaging
                 case END_RAID_COMMAND:
                     await endRaid(command);
                     break;
+                case VOICE_TEST_COMMAND:
+                    await voiceTest(command);
+                    break;
+                case SIMULATE_LOOT_COMMAND:
+                    await simulateLoot(command);
+                    break;
+                case SET_DURATION_COMMAND:
+                    await setDuration(command);
+                    break;
+                case SET_SPACING_COMMAND:
+                    await setSpacing(command);
+                    break;
+                case ADD_ITEM_COMMAND:
+                    await addItem(command);
+                    break;
             }
+        }
+
+        private async Task addItem(SocketSlashCommand command)
+        {
+            using var scope = scopeFactory.CreateScope();
+
+            var permission = scope.ServiceProvider.GetRequiredService<PermissionCalculator>();
+            var communicationService = scope.ServiceProvider.GetRequiredService<ICommunicationService>();
+
+            var (hasPermission, message) = permission.CheckManagerPermissions(command, ADD_ITEM_COMMAND);
+            if (!hasPermission)
+            {
+                await communicationService.SendLogMessage(command.GuildId, command.User.Id, message);
+                await command.FollowupAsync(message, ephemeral: true);
+                return;
+            }
+
+            var itemName = command.Data.Options.FirstOrDefault(x => x.Name == ITEM_NAME_ARGUMENT)?.Value?.ToString() ?? string.Empty;
+            var holder = command.Data.Options.FirstOrDefault(x => x.Name == HOLDER_ARGUMENT)?.Value?.ToString();
+
+            var result = scope.ServiceProvider.GetRequiredService<EQLogs.ManualEQLogService>().AddManualItem(itemName, holder);
+            if (result.WasSuccessful)
+                await communicationService.SendLogMessage(command.GuildId, command.User.Id, result.Message);
+
+            await command.FollowupAsync(result.Message, ephemeral: true);
+        }
+
+        private async Task setSpacing(SocketSlashCommand command)
+        {
+            using var scope = scopeFactory.CreateScope();
+
+            var permission = scope.ServiceProvider.GetRequiredService<PermissionCalculator>();
+            var communicationService = scope.ServiceProvider.GetRequiredService<ICommunicationService>();
+
+            var (hasPermission, message) = permission.CheckManagerPermissions(command, SET_SPACING_COMMAND);
+            if (!hasPermission)
+            {
+                await communicationService.SendLogMessage(command.GuildId, command.User.Id, message);
+                await command.FollowupAsync(message, ephemeral: true);
+                return;
+            }
+
+            var secondsStr = command.Data.Options.FirstOrDefault(x => x.Name == SECONDS_ARGUMENT)?.Value?.ToString();
+            if (!int.TryParse(secondsStr, out var seconds))
+            {
+                await command.FollowupAsync("Seconds must be a whole number.", ephemeral: true);
+                return;
+            }
+
+            // Discord enforces the minimum too, this catches anything that gets past it.
+            var result = await scope.ServiceProvider.GetRequiredService<AuctionTimingService>().SetSpacingForActiveRaid(seconds);
+            if (result.WasSuccessful)
+            {
+                // The loot queue post shows the spacing.
+                scope.ServiceProvider.GetRequiredService<LootQueueService>().MarkDirty();
+                await communicationService.SendLogMessage(command.GuildId, command.User.Id, result.Message);
+            }
+
+            await command.FollowupAsync(result.Message, ephemeral: true);
+        }
+
+        private async Task setDuration(SocketSlashCommand command)
+        {
+            using var scope = scopeFactory.CreateScope();
+
+            var permission = scope.ServiceProvider.GetRequiredService<PermissionCalculator>();
+            var communicationService = scope.ServiceProvider.GetRequiredService<ICommunicationService>();
+
+            var (hasPermission, message) = permission.CheckManagerPermissions(command, SET_DURATION_COMMAND);
+            if (!hasPermission)
+            {
+                await communicationService.SendLogMessage(command.GuildId, command.User.Id, message);
+                await command.FollowupAsync(message, ephemeral: true);
+                return;
+            }
+
+            var minutesStr = command.Data.Options.FirstOrDefault(x => x.Name == MINUTES_ARGUMENT)?.Value?.ToString();
+            if (!int.TryParse(minutesStr, out var minutes))
+            {
+                await command.FollowupAsync("Minutes must be a whole number.", ephemeral: true);
+                return;
+            }
+
+            var result = await scope.ServiceProvider.GetRequiredService<AuctionTimingService>().SetDurationForActiveRaid(minutes);
+            if (result.WasSuccessful)
+            {
+                // The loot queue post shows the auction length.
+                scope.ServiceProvider.GetRequiredService<LootQueueService>().MarkDirty();
+                await communicationService.SendLogMessage(command.GuildId, command.User.Id, result.Message);
+            }
+
+            await command.FollowupAsync(result.Message, ephemeral: true);
+        }
+
+        private async Task simulateLoot(SocketSlashCommand command)
+        {
+            using var scope = scopeFactory.CreateScope();
+
+            var permission = scope.ServiceProvider.GetRequiredService<PermissionCalculator>();
+            var communicationService = scope.ServiceProvider.GetRequiredService<ICommunicationService>();
+
+            var (hasPermission, message) = permission.CheckManagerPermissions(command, SIMULATE_LOOT_COMMAND);
+            if (!hasPermission)
+            {
+                await communicationService.SendLogMessage(command.GuildId, command.User.Id, message);
+                await command.FollowupAsync(message, ephemeral: true);
+                return;
+            }
+
+            // Simulated loot is dropped the same way as real loot, which needs a raid and a current sheet.
+            var activeRaid = store.ActiveRaid;
+            if (activeRaid == null)
+            {
+                await command.FollowupAsync("There's no active raid. Run /setsheet with a test sheet first.", ephemeral: true);
+                return;
+            }
+
+            if (!scope.ServiceProvider.GetRequiredService<GoogleSheetService>().IsSheetCurrent)
+            {
+                await command.FollowupAsync("The sheet was set more than 24 hours ago. Run /setsheet again first.", ephemeral: true);
+                return;
+            }
+
+            var countStr = command.Data.Options.FirstOrDefault(x => x.Name == COUNT_ARGUMENT)?.Value?.ToString();
+            if (!int.TryParse(countStr, out var count))
+                count = 5;
+            count = Math.Clamp(count, 1, MAX_SIMULATED_LOOT);
+
+            var result = scope.ServiceProvider.GetRequiredService<EQLogs.ManualEQLogService>().AddSimulatedLoot(count);
+            if (!result.WasSuccessful)
+            {
+                await command.FollowupAsync(result.Message, ephemeral: true);
+                return;
+            }
+
+            var summary = $"{result.Message}, looted by **{EQLogs.ManualEQLogService.SIMULATED_LOOTER}**. They'll show up on the sheet and the Loot Queue within a few seconds:\n"
+                + string.Join("\n", result.Items.Select(x => $"- {x}"));
+            if (summary.Length > 1900)
+                summary = summary.Substring(0, 1900) + "\n...";
+
+            await communicationService.SendLogMessage(command.GuildId, command.User.Id, $"Simulated {result.Items.Count} loot drop(s) for testing.");
+            await command.FollowupAsync(summary, ephemeral: true);
+        }
+
+        private async Task voiceTest(SocketSlashCommand command)
+        {
+            using var scope = scopeFactory.CreateScope();
+
+            var permission = scope.ServiceProvider.GetRequiredService<PermissionCalculator>();
+            var communicationService = scope.ServiceProvider.GetRequiredService<ICommunicationService>();
+            var voiceCommunication = scope.ServiceProvider.GetRequiredService<VoiceCommunicationService>();
+
+            var (hasPermission, message) = permission.CheckManagerPermissions(command, VOICE_TEST_COMMAND);
+            if (!hasPermission)
+            {
+                await communicationService.SendLogMessage(command.GuildId, command.User.Id, message);
+                await command.FollowupAsync(message, ephemeral: true);
+                return;
+            }
+
+            if (!command.GuildId.HasValue)
+            {
+                await command.FollowupAsync("Could not determine the guild for this command.", ephemeral: true);
+                return;
+            }
+
+            var text = command.Data.Options.FirstOrDefault(x => x.Name == VOICE_TEXT_ARGUMENT)?.Value?.ToString();
+            var result = voiceCommunication.AnnounceTest(command.GuildId.Value, text);
+
+            if (!result.WasSuccessful)
+            {
+                await command.FollowupAsync($"Voice is not available: {result.Message}", ephemeral: true);
+                return;
+            }
+
+            await command.FollowupAsync("Voice test queued, listen in the voice channel.", ephemeral: true);
         }
 
         private async Task endRaid(SocketSlashCommand command)
@@ -63,6 +266,12 @@ namespace BidBot.Messaging
 
                 activeRaid.EndDT = DateTime.UtcNow;
                 var task = store.SaveChanges(); // don't care about waiting...
+
+                // Never fails or throws, voice problems can't stop the raid from ending.
+                scope.ServiceProvider.GetRequiredService<VoiceCommunicationService>().EndRaidPresence();
+
+                // Deletes waiting item pickers, resumes anything paused, removes the queue buttons and clears the queue.
+                await scope.ServiceProvider.GetRequiredService<LootQueueService>().EndRaid(activeRaid.GuildID);
 
                 var unixTime = new DateTimeOffset(activeRaid.EndDT.Value).ToUnixTimeSeconds() ;
                 await command.FollowupAsync($"Ended Raid at: <t:{unixTime}:f>", ephemeral: true);
@@ -106,15 +315,18 @@ namespace BidBot.Messaging
                 return;
             }
 
-            if (!int.TryParse(durationStr, out var duration))
-                duration = 3; //Default duration if not provided or invalid
+            // Not given (or invalid): the raid's default from /setduration, otherwise Settings:DefaultAuctionDuration.
+            if (!int.TryParse(durationStr, out var duration) || duration <= 0)
+                duration = scope.ServiceProvider.GetRequiredService<AuctionTimingService>().GetDefaultDuration();
 
-            int? nullableRowNum = null;
-            if (int.TryParse(rowNumStr, out var rowNum))
-                nullableRowNum = rowNum;
+            // Every item is on the sheet, the row is where the winner gets written.
+            if (!int.TryParse(rowNumStr, out var rowNum) || rowNum <= 1)
+            {
+                await command.FollowupAsync("A valid sheet row number is required to start an auction.", ephemeral: true);
+                return;
+            }
 
-
-            var result = await bidService.StartBidByName(command.GuildId.Value, command.User.Id, itemName, duration, nullableRowNum);
+            var result = await bidService.StartBidByName(command.GuildId.Value, command.User.Id, itemName, duration, rowNum);
 
             if (!result.WasSuccess)
             {
@@ -171,6 +383,9 @@ namespace BidBot.Messaging
 
                 store.Raids.TryAdd(raid.RaidID, raid);
                 var task = store.SaveChanges(); //Don't care about waiting...
+
+                // Join the voice channel for the raid. Never fails or throws, voice problems can't stop the raid from starting.
+                scope.ServiceProvider.GetRequiredService<VoiceCommunicationService>().StartRaidPresence(raid.GuildID, raid.StartDT);
 
             }
             catch(Exception ex)
